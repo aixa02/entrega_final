@@ -4,6 +4,7 @@ from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
 from app.core.llm import texto
 from app.graph.state import AgentState
@@ -15,16 +16,32 @@ async def buscar_fragmentos(pregunta: str) -> list[tuple[str, str]]:
     return [(d.metadata.get("source", "?"), d.page_content) for d in await get_rag().abuscar(pregunta)]
 
 
-@tool
+class BusquedaInput(BaseModel):
+    pregunta: str = Field(
+        min_length=3, max_length=500, description="Pregunta en INGLÉS (la documentación está en inglés)"
+    )
+
+
+class Fragmento(BaseModel):
+    fuente: str = Field(description="Archivo de la documentación")
+    contenido: str
+
+
+class ResultadoBusqueda(BaseModel):
+    pregunta: str
+    encontrado: bool
+    fragmentos: list[Fragmento]
+
+
+@tool(args_schema=BusquedaInput)
 async def buscar_documentacion_fastapi(pregunta: str) -> str:
     """Busca en la documentación oficial del tutorial de FastAPI (request body, path y
     query parameters, manejo de errores, CORS, middleware, background tasks,
     dependencias). Usar para cualquier pregunta sobre cómo funciona FastAPI.
-    La pregunta debe estar en INGLÉS, porque la documentación está en inglés."""
-    resultados = await buscar_fragmentos(pregunta)
-    if not resultados:
-        return "No se encontró información relevante en la documentación."
-    return "\n\n".join(f"[Fuente: {fuente}]\n{contenido}" for fuente, contenido in resultados)
+    Devuelve un JSON con los fragmentos encontrados y su fuente."""
+    fragmentos = [Fragmento(fuente=f, contenido=c) for f, c in await buscar_fragmentos(pregunta)]
+    resultado = ResultadoBusqueda(pregunta=pregunta, encontrado=bool(fragmentos), fragmentos=fragmentos)
+    return resultado.model_dump_json(indent=2)
 
 
 PROMPT_INVESTIGADOR = """Sos un agente de investigación. Tu única función es buscar datos concretos
