@@ -113,9 +113,16 @@ async def actualizar_job(job_id: str, **campos: Any) -> Job:
     return await _guardar(Job.model_validate({**job.model_dump(), **campos, "updated_at": _ahora()}))
 
 
-async def encolar(mensaje: MensajeCola) -> None:
-    """RPUSH agrega al final de la cola; el worker saca del principio (FIFO)."""
-    await get_redis().rpush(get_settings().queue_name, mensaje.model_dump_json())
+async def encolar(mensaje: MensajeCola, prioridad: bool = False) -> None:
+    """Agrega un mensaje a la cola. El worker siempre saca del principio (BLPOP).
+
+    - Normal: RPUSH al final (FIFO): las tareas nuevas esperan su turno.
+    - Prioridad: LPUSH al principio. Se usa para reanudar o retomar jobs que ya
+      estaban en curso: no tienen que esperar detrás de tareas nuevas, y reanudar
+      después de una aprobación es casi instantáneo (no llama al LLM).
+    """
+    push = get_redis().lpush if prioridad else get_redis().rpush
+    await push(get_settings().queue_name, mensaje.model_dump_json())
 
 
 async def desencolar(timeout: int = ESPERA_COLA_SEGUNDOS) -> MensajeCola | None:
@@ -136,7 +143,7 @@ async def recuperar_jobs_interrumpidos() -> int:
         job = Job.model_validate_json(data)
         if job.status == JobStatus.RUNNING:
             await actualizar_job(job.job_id, status=JobStatus.PENDING, worker=None)
-            await encolar(MensajeCola(job_id=job.job_id, accion="continuar"))
+            await encolar(MensajeCola(job_id=job.job_id, accion="continuar"), prioridad=True)
             recuperados += 1
     if recuperados:
         log.warning("♻️ %s job(s) interrumpidos vuelven a la cola", recuperados)

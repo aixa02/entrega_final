@@ -125,7 +125,7 @@ async def task_worker(nombre: str, grafo: CompiledStateGraph) -> None:
             # Apagado ordenado en medio de un job: no se pierde. Los nodos terminados
             # ya están en el checkpointer; se reencola para retomarlo al reiniciar.
             await actualizar_job(job_id, status=JobStatus.PENDING, worker=None)
-            await encolar(MensajeCola(job_id=job_id, accion="continuar"))
+            await encolar(MensajeCola(job_id=job_id, accion="continuar"), prioridad=True)
             log.warning("%s: job %s interrumpido, vuelve a la cola", nombre, job_id)
             break
         except Exception as e:

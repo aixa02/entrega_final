@@ -75,9 +75,12 @@ async def aprobar_tarea(job_id: str, body: AprobacionRequest) -> AprobacionRespo
     if job.status != JobStatus.WAITING_APPROVAL:
         raise HTTPException(status_code=409, detail=f"El job está en {job.status}, no espera aprobación")
 
-    # No se reanuda acá: se encola, igual que una tarea nueva, para no bloquear la API.
+    # No se reanuda acá: se encola para no bloquear la API, pero al principio de la cola.
     await actualizar_job(job_id, status=JobStatus.PENDING, aprobado=body.aprobado)
-    await encolar(MensajeCola(job_id=job_id, accion="reanudar", aprobado=body.aprobado, comentario=body.comentario))
+    await encolar(
+        MensajeCola(job_id=job_id, accion="reanudar", aprobado=body.aprobado, comentario=body.comentario),
+        prioridad=True,  # no espera detrás de tareas nuevas
+    )
     return AprobacionResponse(job_id=job_id, status=JobStatus.PENDING, aprobado=body.aprobado)
 
 
