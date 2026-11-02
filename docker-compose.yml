@@ -1,12 +1,33 @@
-# Redis Stack: el RedisSaver de LangGraph necesita los módulos de búsqueda y JSON,
-# que no vienen en la imagen común de Redis.
+# Levanta todo el sistema con un solo comando:  docker compose up --build
 services:
+  # Redis Stack: el RedisSaver de LangGraph necesita los módulos de búsqueda y JSON,
+  # que no vienen en la imagen común de Redis.
   redis:
     image: redis/redis-stack-server:latest
     ports:
       - "6379:6379"
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  api:
+    build: .
+    env_file: .env
+    environment:
+      # Dentro de la red de Docker, Redis se llama "redis", no "localhost".
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./informes:/app/informes   # los informes aprobados quedan en tu carpeta
+      - hf-models:/models          # el modelo de embeddings se descarga una sola vez
 
 volumes:
   redis-data:
+  hf-models:
