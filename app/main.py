@@ -16,7 +16,7 @@ from app.core.llm import crear_llm
 from app.graph.builder import construir_grafo
 from app.observability.tracing import configurar_observabilidad
 from app.rag.retriever import get_rag
-from app.services.jobs import get_redis
+from app.services.jobs import get_redis, recuperar_jobs_interrumpidos
 from app.services.worker import task_worker
 
 
@@ -48,6 +48,10 @@ async def lifespan(app: FastAPI):
     async with crear_checkpointer() as checkpointer:
         await checkpointer.asetup()  # crea los índices de checkpoints en Redis
         grafo = construir_grafo(crear_llm(), checkpointer)
+        app.state.grafo = grafo  # para leer conversaciones desde los endpoints
+
+        # Jobs que quedaron en RUNNING por un corte brusco: vuelven a la cola.
+        await recuperar_jobs_interrumpidos()
 
         workers = [asyncio.create_task(task_worker(f"worker-{i}", grafo)) for i in range(1, settings.workers + 1)]
         yield

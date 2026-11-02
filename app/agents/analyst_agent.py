@@ -1,55 +1,67 @@
 """Agente de análisis: valida datos JSON contra un esquema (validación de esquemas)."""
 
 import json
+from typing import Literal
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
-from pydantic import ValidationError, create_model
+from pydantic import BaseModel, Field, ValidationError, create_model
 
 from app.core.llm import texto
 from app.graph.state import AgentState
 
 # Tipos permitidos en el esquema. Se mapean a mano (sin eval) para que el LLM
-# no pueda inyectar código: solo puede elegir uno de estos nombres.
+# no pueda inyectar código: el Literal de CampoEsquema solo admite estos nombres.
 TIPOS = {"str": str, "int": int, "float": float, "bool": bool}
 
 
-@tool
-async def validar_json_contra_esquema(esquema_json: str, datos_json: str) -> str:
+class CampoEsquema(BaseModel):
+    nombre: str = Field(min_length=1, description="Nombre del campo, por ejemplo 'price'")
+    tipo: Literal["str", "int", "float", "bool"]
+    obligatorio: bool
+
+
+class ValidacionInput(BaseModel):
+    campos: list[CampoEsquema] = Field(min_length=1, description="Esquema: un elemento por campo")
+    datos_json: str = Field(description='Objeto JSON a validar, por ejemplo {"name": "Foo", "price": 45.2}')
+
+
+class ErrorCampo(BaseModel):
+    campo: str
+    mensaje: str
+
+
+class ResultadoValidacion(BaseModel):
+    valido: bool
+    datos: str
+    errores: list[ErrorCampo]
+
+
+@tool(args_schema=ValidacionInput)
+async def validar_json_contra_esquema(campos: list[CampoEsquema], datos_json: str) -> str:
     """Valida si un objeto JSON cumple un esquema, igual que lo haría FastAPI con Pydantic.
-
-    esquema_json: JSON con un campo por clave, por ejemplo
-      {"name": {"tipo": "str", "obligatorio": true},
-       "price": {"tipo": "float", "obligatorio": true},
-       "tax": {"tipo": "float", "obligatorio": false}}
-      Tipos permitidos: str, int, float, bool.
-    datos_json: el objeto JSON a validar, por ejemplo {"name": "Foo", "price": 45.2}
-
-    Devuelve VÁLIDO o INVÁLIDO con el detalle de cada error.
-    Validar un solo objeto por llamada."""
+    Validar un solo objeto JSON por llamada. Devuelve un JSON con 'valido' y la lista de errores."""
     try:
-        esquema = json.loads(esquema_json)
         datos = json.loads(datos_json)
-    except json.JSONDecodeError as e:
-        return f"ERROR: JSON mal formado ({e})."
+        if not isinstance(datos, dict):
+            raise ValueError("se esperaba un objeto JSON")
+    except ValueError as e:
+        error = ErrorCampo(campo="(JSON)", mensaje=f"JSON mal formado: {e}")
+        return ResultadoValidacion(valido=False, datos=datos_json, errores=[error]).model_dump_json()
 
-    campos = {}
-    for nombre, spec in esquema.items():
-        tipo = TIPOS.get(spec.get("tipo"))
-        if tipo is None:
-            return f"ERROR: tipo '{spec.get('tipo')}' no permitido en el campo '{nombre}'. Usar: {list(TIPOS)}."
-        # Obligatorio → sin valor por defecto. Opcional → acepta None, como en FastAPI.
-        campos[nombre] = (tipo, ...) if spec.get("obligatorio") else (tipo | None, None)
-
-    Modelo = create_model("ModeloValidado", **campos)
+    # Obligatorio → sin valor por defecto. Opcional → acepta None, como en FastAPI.
+    definicion = {
+        c.nombre: (TIPOS[c.tipo], ...) if c.obligatorio else (TIPOS[c.tipo] | None, None) for c in campos
+    }
+    Modelo = create_model("ModeloValidado", **definicion)
     try:
         Modelo.model_validate(datos)
-        return f"VÁLIDO: {datos_json} cumple el esquema."
+        errores: list[ErrorCampo] = []
     except ValidationError as e:
-        errores = "; ".join(f"campo '{'.'.join(map(str, err['loc']))}': {err['msg']}" for err in e.errors())
-        return f"INVÁLIDO: {datos_json} → {errores}"
+        errores = [ErrorCampo(campo=".".join(map(str, err["loc"])), mensaje=err["msg"]) for err in e.errors()]
+    return ResultadoValidacion(valido=not errores, datos=datos_json, errores=errores).model_dump_json()
 
 
 PROMPT_ANALISTA = """Sos un agente de análisis especializado en validación de esquemas.
